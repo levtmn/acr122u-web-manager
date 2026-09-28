@@ -1,0 +1,16 @@
+[Unit]
+Description=RFID Manager Web Server (ACR122U)
+After=network.target pcscd.socket
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/claude/rfid-manager
+ExecStart=/usr/bin/python3 web/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

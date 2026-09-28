@@ -1,0 +1,3 @@
+user ALL=(root) NOPASSWD: /usr/bin/systemctl stop pcscd.service pcscd.socket
+user ALL=(root) NOPASSWD: /usr/bin/systemctl start pcscd.socket pcscd.service
+user ALL=(root) NOPASSWD: /usr/bin/systemctl start rfid-manager.service

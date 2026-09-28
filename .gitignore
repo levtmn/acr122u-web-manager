@@ -1,0 +1,16 @@
+# Card data — never commit real dumps or the key library
+data/
+*.mfd
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Stray local session artifact (Claude Code resume id)
+lastid

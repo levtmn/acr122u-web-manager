@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intercom Key Cloner</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      color: #e8e8ec;
+    }
+    .card { max-width: 500px; width: 100%; border: none; border-radius: 1.5rem; background: #1f2a44; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .pulse { animation: pulse 1.5s infinite; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .step { opacity: .4; }
+    .step.active { opacity: 1; }
+    .step.done { opacity: .7; }
+    .step-num {
+      width: 28px; height: 28px; border-radius: 50%; display: inline-flex;
+      align-items: center; justify-content: center; font-weight: bold; font-size: .9rem;
+      background: #0f3460; flex-shrink: 0;
+    }
+    .step.done .step-num { background: #198754; }
+  </style>
+</head>
+<body>
+  <div class="card shadow-lg p-4 mx-3">
+    <div class="text-center mb-3">
+      <i class="bi bi-house-heart text-primary" style="font-size:2.5rem"></i>
+      <h4 class="fw-bold mb-1 mt-2">Intercom Key Cloner</h4>
+      <p class="text-muted small mb-0">Clone intercom / access keys (ACR122U · 13.56 MHz)</p>
+    </div>
+
+    <div class="alert alert-secondary small mt-3 mb-3">
+      <strong>How it works:</strong> copy an intercom key onto a "magic" blank.
+      Keys with empty sectors (UID only) are copied in full and open the door.
+      Keys with <em>custom sector keys</em> (protected data) cannot be cloned with
+      this reader — you need a Proxmark3. Works only with 13.56 MHz MIFARE Classic;
+      125 kHz keys (EM-Marine) are invisible to this reader.
+    </div>
+
+    <div class="d-flex align-items-center gap-2 mb-4">
+      <span class="status-dot bg-secondary pulse" id="dot"></span>
+      <span id="statusText" class="small text-muted">Checking reader…</span>
+    </div>
+
+    <!-- Step 1 -->
+    <div class="step active mb-3" id="step1">
+      <div class="d-flex align-items-start gap-3">
+        <span class="step-num">1</span>
+        <div class="flex-grow-1">
+          <div class="fw-semibold mb-1">Place the original key on the reader</div>
+          <button class="btn btn-primary btn-sm" id="btnReadSource">Read original</button>
+          <div id="sourceResult" class="mt-2 small"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="step mb-3" id="step2">
+      <div class="d-flex align-items-start gap-3">
+        <span class="step-num">2</span>
+        <div class="flex-grow-1">
+          <div class="fw-semibold mb-1">Remove the original, place the blank</div>
+          <button class="btn btn-warning btn-sm" id="btnWrite" disabled>Write to blank</button>
+          <button class="btn btn-outline-light btn-sm d-none" id="btnRetry">Retry</button>
+          <div id="writeResult" class="mt-2 small"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="step" id="step3">
+      <div class="d-flex align-items-start gap-3">
+        <span class="step-num">3</span>
+        <div class="flex-grow-1">
+          <div class="fw-semibold mb-1">Done</div>
+          <div id="doneResult" class="small text-muted">Test the copy on the actual intercom.</div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="my-4" style="border-color:#33456b">
+
+    <!-- Key library -->
+    <div>
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="fw-semibold"><i class="bi bi-collection me-1"></i>Key library</div>
+        <button class="btn btn-outline-light btn-sm" id="btnRefreshKeys"><i class="bi bi-arrow-clockwise"></i></button>
+      </div>
+      <div id="keyList" class="small text-muted">Loading…</div>
+      <div class="form-text mt-2">The write button copies the selected key onto the blank on the reader.</div>
+    </div>
+  </div>
+
+<script>
+let source = null; // {dump_id, uid, type, mode}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    const dot = document.getElementById('dot');
+    const txt = document.getElementById('statusText');
+    // /api/status is intentionally cheap (USB presence only) — it does not cycle
+    // pcscd, so it cannot tell whether a card is on the reader. The card itself
+    // is read on demand at step 1 ("Read original").
+    if (s.reader) {
+      dot.className = 'status-dot bg-success';
+      txt.textContent = 'Reader ready';
+    } else {
+      dot.className = 'status-dot bg-danger pulse';
+      txt.textContent = 'Reader not found';
+    }
+  } catch {
+    document.getElementById('dot').className = 'status-dot bg-danger pulse';
+    document.getElementById('statusText').textContent = 'Service unavailable';
+  }
+}
+refreshStatus();
+setInterval(refreshStatus, 5000);
+
+function setStep(n, cls) { document.getElementById('step' + n).className = 'step ' + cls + ' mb-3'; }
+
+document.getElementById('btnReadSource').onclick = async () => {
+  const el = document.getElementById('sourceResult');
+  el.innerHTML = '<span class="text-muted">Reading (a full dump takes ~30 s)…</span>';
+  try {
+    const r = await fetch('/api/clone/source');
+    const d = await r.json();
+    if (!d.ok) { el.innerHTML = `<div class="alert alert-danger py-2 mb-0">${d.message}</div>`; return; }
+    source = d;
+    const modeLabel = d.mode === 'full'
+      ? '<span class="badge bg-success">full dump (UID + data)</span>'
+      : '<span class="badge bg-warning text-dark">UID only</span>';
+    let html = `<div class="alert alert-success py-2 mb-0 mono">UID: ${d.uid}<br>Type: ${d.type}<br>${modeLabel}</div>`;
+    if (d.warn) html += `<div class="alert alert-warning py-2 mt-2 mb-0">${d.warn}</div>`;
+    el.innerHTML = html;
+    setStep(1, 'done'); setStep(2, 'active');
+    document.getElementById('btnWrite').disabled = false;
+    loadKeys();
+  } catch {
+    el.innerHTML = '<div class="alert alert-danger py-2 mb-0">Service unavailable</div>';
+  }
+};
+
+async function doWrite() {
+  const el = document.getElementById('writeResult');
+  const btnWrite = document.getElementById('btnWrite');
+  const btnRetry = document.getElementById('btnRetry');
+  el.innerHTML = '<span class="text-muted">Detecting blank type and writing…</span>';
+  btnWrite.disabled = true; btnRetry.disabled = true;
+  try {
+    const r = await fetch('/api/clone/write', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dump_id: source.dump_id})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const m = d.method === 'gen1a' ? 'UID/Gen1a' : 'CUID/Gen2';
+      el.innerHTML = `<div class="alert alert-success py-2 mb-0 mono">Done. Blank UID: ${d.uid}<br>Blank type: ${m}</div>`;
+      btnRetry.classList.add('d-none');
+      setStep(2, 'done'); setStep(3, 'active');
+      document.getElementById('doneResult').innerHTML =
+        (source.mode === 'full'
+          ? 'UID and data copied. '
+          : 'UID only copied. ') + 'Test the copy on the actual intercom.';
+    } else if (d.needs_reseat) {
+      el.innerHTML = `<div class="alert alert-warning py-2 mb-0">${d.message}</div>`;
+      btnRetry.classList.remove('d-none'); btnRetry.disabled = false;
+    } else if (d.not_magic) {
+      el.innerHTML = `<div class="alert alert-danger py-2 mb-0">${d.message}</div>`;
+      btnRetry.classList.add('d-none');
+    } else {
+      el.innerHTML = `<div class="alert alert-danger py-2 mb-0">${d.message}</div>`;
+      btnRetry.classList.remove('d-none'); btnRetry.disabled = false;
+    }
+  } catch {
+    el.innerHTML = '<div class="alert alert-danger py-2 mb-0">Service unavailable</div>';
+    btnRetry.classList.remove('d-none'); btnRetry.disabled = false;
+  } finally {
+    btnWrite.disabled = false;
+  }
+}
+document.getElementById('btnWrite').onclick = doWrite;
+document.getElementById('btnRetry').onclick = doWrite;
+
+// ── Key library ──────────────────────────────────────────────────────────
+const modeBadge = m => m === 'full'
+  ? '<span class="badge bg-success">UID+data</span>'
+  : '<span class="badge bg-warning text-dark">UID only</span>';
+
+async function loadKeys() {
+  const box = document.getElementById('keyList');
+  try {
+    const r = await fetch('/api/keys');
+    const keys = await r.json();
+    if (!keys.length) { box.innerHTML = '<span class="text-muted">Empty — read a key in step 1.</span>'; return; }
+    box.innerHTML = keys.map(k => `
+      <div class="d-flex align-items-center gap-2 py-2 border-bottom" style="border-color:#33456b!important" data-id="${k.id}">
+        <input class="form-control form-control-sm bg-dark text-light border-secondary key-name"
+               style="max-width:150px" value="${(k.name||'').replace(/"/g,'&quot;')}"
+               placeholder="name…" data-id="${k.id}">
+        <span class="mono flex-grow-1">${k.uid}</span>
+        ${modeBadge(k.mode)}
+        <button class="btn btn-warning btn-sm key-write" data-id="${k.id}" title="Write to blank"><i class="bi bi-pencil-square"></i></button>
+        <button class="btn btn-outline-danger btn-sm key-del" data-id="${k.id}" title="Delete"><i class="bi bi-trash"></i></button>
+      </div>`).join('');
+
+    box.querySelectorAll('.key-name').forEach(inp => {
+      inp.onchange = async () => {
+        await fetch(`/api/keys/${inp.dataset.id}/rename`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: inp.value})
+        });
+      };
+    });
+    box.querySelectorAll('.key-del').forEach(b => {
+      b.onclick = async () => {
+        if (!confirm('Delete this key from the library?')) return;
+        await fetch(`/api/keys/${b.dataset.id}`, {method: 'DELETE'});
+        loadKeys();
+      };
+    });
+    box.querySelectorAll('.key-write').forEach(b => {
+      b.onclick = () => writeSavedKey(b.dataset.id, b);
+    });
+  } catch {
+    box.innerHTML = '<span class="text-danger">Failed to load</span>';
+  }
+}
+
+async function writeSavedKey(id, btn) {
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    const r = await fetch('/api/clone/write', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dump_id: id})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      alert(`Written to blank.\nUID: ${d.uid}\nBlank type: ${d.method === 'gen1a' ? 'UID/Gen1a' : 'CUID/Gen2'}`);
+    } else if (d.needs_reseat) {
+      alert(d.message + '\n\nPress "Write" again after reseating the card.');
+    } else {
+      alert(d.message);
+    }
+  } catch {
+    alert('Service unavailable');
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
+
+document.getElementById('btnRefreshKeys').onclick = loadKeys;
+loadKeys();
+</script>
+</body>
+</html>

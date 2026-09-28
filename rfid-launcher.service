@@ -1,0 +1,16 @@
+[Unit]
+Description=RFID Manager Launcher (USB presence check + on-demand start)
+After=network.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/claude/rfid-manager
+ExecStart=/usr/bin/python3 launcher/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
